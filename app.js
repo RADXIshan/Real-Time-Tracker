@@ -1,30 +1,31 @@
 const express = require('express');
-const app = express();
-const port = 3000;
-const path = require('path');
-
-const socketio = require('socket.io');
 const http = require('http');
+const socketIo = require('socket.io');
+
+const app = express();
 const server = http.createServer(app);
-const io = socketio(server);
+const io = socketIo(server);
 
+app.use(express.static('public')); // Assuming files are in a 'public' folder
 app.set('view engine', 'ejs');
-app.use(express.static(path.join(__dirname, 'public')));
-
-io.on('connection', (socket) => {
-  socket.on('send-location', (data) => {
-    io.emit('receive-location', {id:socket.id,...data});
-  });
-  console.log('A user connected');
-  socket.on('disconnect', () => {
-    console.log('A user disconnected');
-  });
-});
 
 app.get('/', (req, res) => {
-  res.render('index');
+    res.render('index');
 });
 
-server.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
-})
+io.on('connection', (socket) => {
+    console.log('New client connected:', socket.id);
+
+    socket.on('send-location', (data) => {
+        socket.broadcast.emit('receive-location', data);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Client disconnected:', socket.id);
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});

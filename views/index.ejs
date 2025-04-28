@@ -20,6 +20,7 @@
                 <div class="search-box">
                     <input type="text" id="search-input" placeholder="Search places, restaurants, etc.">
                     <button id="search-button"><i class="fas fa-search"></i></button>
+                    <div id="autocomplete-results" class="autocomplete-dropdown"></div>
                 </div>
                 <div class="quick-search">
                     <button class="quick-search-btn" data-query="restaurants near me" data-category="restaurant">Restaurants</button>
@@ -95,7 +96,6 @@
                 <!-- Map Controls -->
                 <div class="map-controls">
                     <button id="center-map" class="control-btn" title="Center on me"><i class="fas fa-crosshairs"></i></button>
-                    <button id="toggle-traffic" class="control-btn" title="Toggle traffic view"><i class="fas fa-car"></i></button>
                     <button id="toggle-satellite" class="control-btn" title="Toggle satellite view"><i class="fas fa-globe"></i></button>
                     <button id="measure-distance" class="control-btn" title="Measure distance"><i class="fas fa-ruler"></i></button>
                     <button id="share-location" class="control-btn" title="Share my location"><i class="fas fa-share-alt"></i></button>
@@ -114,6 +114,19 @@
                 </div>
             </div>
         </main>
+
+        <!-- Share Location Modal -->
+        <div id="share-modal" class="modal">
+            <div class="modal-content">
+                <button id="close-modal" class="btn close-btn"><i class="fas fa-times"></i></button>
+                <h2>Share Your Location</h2>
+                <input type="text" id="share-link" readonly>
+                <button id="copy-link" class="btn"><i class="fas fa-copy"></i> Copy Link</button>
+            </div>
+        </div>
+
+        <!-- Travel Times Button -->
+        <button id="travel-times" class="control-btn" style="display: none;" title="Show travel times"><i class="fas fa-clock"></i> Travel Times</button>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>

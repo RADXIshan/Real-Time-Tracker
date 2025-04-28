@@ -1,51 +1,63 @@
-// Initialize socket connection
+/**
+ * Real-time location-sharing and mapping application using Leaflet.js and Socket.IO.
+ * Features include user tracking, place search, autocomplete, routing with popup info, and nearby POI search.
+ */
+
+// Initialize Socket.IO connection
 const socket = io();
 let mySocketId = null;
 let myMarker = null;
 let activeUsers = {};
 let currentMapLayer = 'streets';
-let mapLayers = {
+let routeLayer = null;
+let destinationMarker = null;
+let poiMarkers = [];
+let distanceMeasurementActive = false;
+let measurePoints = [];
+let measureMarkers = [];
+let measureLines = [];
+let autocompleteCache = new Map(); // Cache for autocomplete suggestions
+const MIN_CHARS_FOR_AUTOCOMPLETE = 2;
+const DEFAULT_LOCATION = [37.7749, -122.4194]; // San Francisco
+const DEFAULT_ZOOM = 16;
+
+// Map layers
+const mapLayers = {
     streets: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }),
     satellite: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+        attribution: 'Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
     })
 };
 
-// Add these variables for route functionality
-let routeLayer = null;
-let routeInfoControl = null;
-
-// Initialize map with a default location (San Francisco)
+// Initialize map
 const mapElement = document.getElementById("map");
 let map;
-
 if (mapElement) {
     map = L.map("map", {
         layers: [mapLayers.streets]
-    }).setView([37.7749, -122.4194], 16); // Increased zoom level from 13 to 16
-    console.log("Map initialized successfully");
+    }).setView(DEFAULT_LOCATION, DEFAULT_ZOOM);
 } else {
-    console.error("Map container not found!");
+    document.body.innerHTML = '<div class="error">Map container not found. Please check your HTML.</div>';
+    throw new Error("Map container not found");
 }
 
 // Custom marker icon
-const createCustomIcon = (isCurrentUser = false) => {
+function createCustomIcon(isCurrentUser = false) {
     return L.divIcon({
-        className: isCurrentUser ? 'custom-marker self' : 'custom-marker',
-        html: `<i class="fas fa-male"></i>`, // Using a person icon
-        iconSize: [50, 50], // Increased from 40x40 to 50x50
+        className: `custom-marker ${isCurrentUser ? 'self' : ''}`,
+        html: `<i class="fas fa-male"></i>`,
+        iconSize: [50, 50],
         iconAnchor: [25, 50]
     });
-};
+}
 
-// UI Elements - Add null checks to prevent errors
+// UI Elements
 const sidebar = document.querySelector('.sidebar');
 const toggleSidebarBtn = document.getElementById('toggle-sidebar');
 const closeSidebarBtn = document.getElementById('close-sidebar');
 const centerMapBtn = document.getElementById('center-map');
-const toggleTrafficBtn = document.getElementById('toggle-traffic');
 const toggleSatelliteBtn = document.getElementById('toggle-satellite');
 const connectionText = document.getElementById('connection-text');
 const connectionIcon = document.getElementById('connection-icon');
@@ -68,58 +80,90 @@ const closeModalBtn = document.getElementById('close-modal');
 const copyLinkBtn = document.getElementById('copy-link');
 const shareLink = document.getElementById('share-link');
 const measureDistanceBtn = document.getElementById('measure-distance');
+const travelTimesBtn = document.getElementById('travel-times');
+let autocompleteResults = document.getElementById('autocomplete-results');
 
-// Event Listeners - Add null checks to prevent errors
+// Add autocomplete dropdown if missing
+if (!autocompleteResults && searchInput) {
+    autocompleteResults = document.createElement('div');
+    autocompleteResults.id = 'autocomplete-results';
+    autocompleteResults.className = 'autocomplete-dropdown';
+    searchInput.parentNode.appendChild(autocompleteResults);
+}
+
+// Event Listeners
 if (toggleSidebarBtn) {
     toggleSidebarBtn.addEventListener('click', () => {
-        if (sidebar) sidebar.classList.toggle('active');
+        if (sidebar && !sidebar.classList.contains('active')) {
+            sidebar.classList.add('active');
+        }
     });
 }
 
 if (closeSidebarBtn) {
     closeSidebarBtn.addEventListener('click', () => {
-        if (sidebar) sidebar.classList.remove('active');
+        if (sidebar && sidebar.classList.contains('active')) {
+            sidebar.classList.remove('active');
+        }
     });
 }
 
-// Add search functionality event listeners
+if (closeResultsBtn) {
+    closeResultsBtn.addEventListener('click', () => {
+        if (searchResultsPanel) {
+            searchResultsPanel.classList.remove('active');
+            clearSearchResults();
+        }
+    });
+}
+
 if (searchButton) {
     searchButton.addEventListener('click', () => {
-        if (searchInput && map && myMarker) {
-            const query = searchInput.value.trim();
-            if (query) {
-                searchPlaces(query, myMarker.getLatLng().lat, myMarker.getLatLng().lng);
-            }
-        }
+        const query = searchInput?.value.trim();
+        if (!query) return;
+        const { lat, lng } = getCurrentLocation();
+        searchPlaces(query, lat, lng);
     });
 }
 
 if (searchInput) {
     searchInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && map && myMarker) {
+        if (e.key === 'Enter') {
             const query = searchInput.value.trim();
-            if (query) {
-                searchPlaces(query, myMarker.getLatLng().lat, myMarker.getLatLng().lng);
-            }
+            if (!query) return;
+            const { lat, lng } = getCurrentLocation();
+            searchPlaces(query, lat, lng);
+        }
+    });
+
+    searchInput.addEventListener('input', debounce((e) => {
+        const query = e.target.value.trim();
+        if (query.length < MIN_CHARS_FOR_AUTOCOMPLETE) {
+            autocompleteResults.innerHTML = '';
+            autocompleteResults.classList.remove('active');
+            return;
+        }
+        const { lat, lng } = getCurrentLocation();
+        fetchAutocompleteSuggestions(query, lat, lng);
+    }, 300));
+
+    document.addEventListener('click', (e) => {
+        if (!searchInput.contains(e.target) && !autocompleteResults.contains(e.target)) {
+            autocompleteResults.classList.remove('active');
         }
     });
 }
 
-// Add event listeners for quick search buttons
 if (quickSearchButtons) {
     quickSearchButtons.forEach(button => {
         button.addEventListener('click', () => {
-            if (map && myMarker) {
-                const category = button.dataset.category;
-                const query = button.dataset.query;
-                
-                if (category) {
-                    searchNearby(category, myMarker.getLatLng().lat, myMarker.getLatLng().lng);
-                } else if (query) {
-                    searchPlaces(query, myMarker.getLatLng().lat, myMarker.getLatLng().lng);
-                }
-            } else {
-                alert('Your location is not available yet. Please wait for GPS tracking to activate.');
+            const category = button.dataset.category;
+            const query = button.dataset.query;
+            const { lat, lng } = getCurrentLocation();
+            if (category) {
+                searchNearby(category, lat, lng);
+            } else if (query) {
+                searchPlaces(query, lat, lng);
             }
         });
     });
@@ -127,16 +171,14 @@ if (quickSearchButtons) {
 
 if (centerMapBtn) {
     centerMapBtn.addEventListener('click', () => {
-        if (myMarker && map) {
-            map.setView(myMarker.getLatLng(), 16);
+        if (myMarker) {
+            map.setView(myMarker.getLatLng(), DEFAULT_ZOOM);
         }
     });
 }
 
 if (toggleSatelliteBtn) {
     toggleSatelliteBtn.addEventListener('click', () => {
-        if (!map) return;
-        
         if (currentMapLayer === 'streets') {
             map.removeLayer(mapLayers.streets);
             map.addLayer(mapLayers.satellite);
@@ -151,653 +193,817 @@ if (toggleSatelliteBtn) {
     });
 }
 
-// Socket events
+if (shareLocationBtn) {
+    shareLocationBtn.addEventListener('click', () => {
+        if (!myMarker) {
+            showToast('Location not available. Please enable tracking.');
+            return;
+        }
+        if (shareModal) {
+            shareModal.classList.add('active');
+            const shareUrl = `${window.location.origin}?user=${mySocketId}&lat=${myMarker.getLatLng().lat}&lng=${myMarker.getLatLng().lng}`;
+            if (shareLink) shareLink.value = shareUrl;
+        }
+    });
+}
+
+if (closeModalBtn) {
+    closeModalBtn.addEventListener('click', () => {
+        if (shareModal) {
+            shareModal.classList.remove('active');
+        }
+    });
+}
+
+if (copyLinkBtn) {
+    copyLinkBtn.addEventListener('click', () => {
+        if (shareLink) {
+            navigator.clipboard.writeText(shareLink.value)
+                .then(() => showToast('Link copied to clipboard!'))
+                .catch(() => showToast('Failed to copy link.'));
+        }
+    });
+}
+
+if (measureDistanceBtn) {
+    measureDistanceBtn.addEventListener('click', () => {
+        distanceMeasurementActive = !distanceMeasurementActive;
+        measureDistanceBtn.classList.toggle('active', distanceMeasurementActive);
+        if (distanceMeasurementActive) {
+            map.on('click', handleMeasureClick);
+            showToast('Click on the map to start measuring distance.');
+        } else {
+            map.off('click', handleMeasureClick);
+            clearMeasurement();
+            showToast('Distance measurement stopped.');
+        }
+    });
+}
+
+if (travelTimesBtn) {
+    travelTimesBtn.style.display = 'none'; // Hidden by default
+    travelTimesBtn.addEventListener('click', () => {
+        if (destinationMarker) {
+            const { lat, lng } = destinationMarker.getLatLng();
+            showTravelTimes(lat, lng);
+        }
+    });
+}
+
+// Socket Events
 socket.on('connect', () => {
     mySocketId = socket.id;
-    if (userIdElement) userIdElement.textContent = `ID: ${mySocketId}`;
-    if (connectionText) connectionText.textContent = 'Connected';
-    if (connectionIcon) {
-        connectionIcon.innerHTML = '<i class="fas fa-wifi"></i>';
-        connectionIcon.classList.add('connected');
-        connectionIcon.classList.remove('disconnected');
-    }
+    userIdElement.textContent = `ID: ${hashId(mySocketId)}`;
+    connectionText.textContent = 'Connected';
+    connectionIcon.innerHTML = '<i class="fas fa-wifi"></i>';
+    connectionIcon.classList.add('connected');
+    connectionIcon.classList.remove('disconnected');
 });
 
 socket.on('disconnect', () => {
-    if (connectionText) connectionText.textContent = 'Disconnected';
-    if (connectionIcon) {
-        connectionIcon.innerHTML = '<i class="fas fa-wifi-slash"></i>';
-        connectionIcon.classList.add('disconnected');
-        connectionIcon.classList.remove('connected');
-    }
-    if (trackingText) trackingText.textContent = 'Tracking Inactive';
-    if (trackingIcon) trackingIcon.innerHTML = '<i class="fas fa-location-slash"></i>';
+    connectionText.textContent = 'Disconnected';
+    connectionIcon.innerHTML = '<i class="fas fa-wifi-slash"></i>';
+    connectionIcon.classList.add('disconnected');
+    connectionIcon.classList.remove('connected');
+    trackingText.textContent = 'Tracking Inactive';
+    trackingIcon.innerHTML = '<i class="fas fa-location-slash"></i>';
 });
 
-socket.on("receive-location", (data) => {
-    if (!map) return;
-    
+socket.on('receive-location', (data) => {
     const { id, latitude, longitude } = data;
-    
-    // Update active users
+    if (id === mySocketId) return;
+
     if (!activeUsers[id]) {
         activeUsers[id] = {
             id,
-            marker: null,
+            marker: L.marker([latitude, longitude], {
+                icon: createCustomIcon(false)
+            }).addTo(map),
             lastUpdate: new Date()
         };
-        updateActiveUsersList();
-    } else {
-        activeUsers[id].lastUpdate = new Date();
-    }
-    
-    // Update or create marker
-    const isCurrentUser = id === mySocketId;
-    if (activeUsers[id].marker) {
-        activeUsers[id].marker.setLatLng([latitude, longitude]);
-    } else {
-        activeUsers[id].marker = L.marker([latitude, longitude], {
-            icon: createCustomIcon(isCurrentUser)
-        }).addTo(map);
-        
-        // Add popup with user info
         activeUsers[id].marker.bindPopup(`
             <div class="user-popup">
-                <h3>${isCurrentUser ? 'Your Location' : 'User ' + id.substring(0, 6)}</h3>
+                <h3>User ${hashId(id).substring(0, 6)}</h3>
                 <p>Lat: ${latitude.toFixed(6)}</p>
                 <p>Lng: ${longitude.toFixed(6)}</p>
             </div>
         `);
-    }
-    
-    // If this is current user, update UI and center map
-    if (isCurrentUser) {
-        myMarker = activeUsers[id].marker;
-        if (currentLatElement) currentLatElement.textContent = `Latitude: ${latitude.toFixed(6)}`;
-        if (currentLngElement) currentLngElement.textContent = `Longitude: ${longitude.toFixed(6)}`;
-        
-        // Reverse geocode to get address
-        fetchAddress(latitude, longitude);
-        
-        // Center map on first location
-        if (!map.hasInitialLocation) {
-            map.setView([latitude, longitude], 16);
-            map.hasInitialLocation = true;
-        }
+        updateActiveUsersList();
+    } else {
+        activeUsers[id].marker.setLatLng([latitude, longitude]);
+        activeUsers[id].lastUpdate = new Date();
     }
 });
 
-// Geolocation tracking
+// Geolocation Tracking
 if (navigator.geolocation) {
     navigator.geolocation.watchPosition(
         (position) => {
             const { latitude, longitude } = position.coords;
             socket.emit('send-location', { latitude, longitude });
-            
-            if (trackingText) trackingText.textContent = 'Tracking Active';
-            if (trackingIcon) {
-                trackingIcon.innerHTML = '<i class="fas fa-location-arrow"></i>';
-                trackingIcon.classList.add('pulse');
+            currentLatElement.textContent = `Latitude: ${latitude.toFixed(6)}`;
+            currentLngElement.textContent = `Longitude: ${longitude.toFixed(6)}`;
+            fetchAddress(latitude, longitude);
+
+            if (myMarker) {
+                myMarker.setLatLng([latitude, longitude]);
+            } else {
+                myMarker = L.marker([latitude, longitude], {
+                    icon: createCustomIcon(true)
+                }).addTo(map);
+                myMarker.bindPopup(`
+                    <div class="user-popup">
+                        <h3>Your Location</h3>
+                        <p>Lat: ${latitude.toFixed(6)}</p>
+                        <p>Lng: ${longitude.toFixed(6)}</p>
+                    </div>
+                `);
+                activeUsers[mySocketId] = {
+                    id: mySocketId,
+                    marker: myMarker,
+                    lastUpdate: new Date()
+                };
+                map.setView([latitude, longitude], DEFAULT_ZOOM);
             }
+
+            trackingText.textContent = 'Tracking Active';
+            trackingIcon.innerHTML = '<i class="fas fa-location-arrow"></i>';
+            trackingIcon.classList.add('pulse');
         },
         (error) => {
             console.error('Error getting location:', error);
-            if (trackingText) trackingText.textContent = 'Tracking Error';
-            if (trackingIcon) {
-                trackingIcon.innerHTML = '<i class="fas fa-location-slash"></i>';
-                trackingIcon.classList.remove('pulse');
-            }
+            trackingText.textContent = 'Tracking Error';
+            trackingIcon.innerHTML = '<i class="fas fa-location-slash"></i>';
+            trackingIcon.classList.remove('pulse');
+            showToast('Could not get your location. Please check GPS settings.');
         },
         {
             enableHighAccuracy: true,
             timeout: 5000,
-            maximumAge: 0,
+            maximumAge: 0
         }
     );
 } else {
-    if (trackingText) trackingText.textContent = 'Geolocation Not Supported';
-    if (trackingIcon) trackingIcon.innerHTML = '<i class="fas fa-location-slash"></i>';
+    trackingText.textContent = 'Geolocation Not Supported';
+    trackingIcon.innerHTML = '<i class="fas fa-location-slash"></i>';
+    showToast('Geolocation is not supported by your browser.');
 }
 
 // Helper Functions
+
+/**
+ * Updates the active users list in the sidebar.
+ */
 function updateActiveUsersList() {
     if (!activeUsersList) return;
-    
-    // Clear the list
     activeUsersList.innerHTML = '';
-    
-    // Add each user
     Object.values(activeUsers).forEach(user => {
         const isCurrentUser = user.id === mySocketId;
         const li = document.createElement('li');
         li.innerHTML = `
             <div class="user-item">
                 <i class="fas fa-car"></i>
-                <span>${isCurrentUser ? 'You' : 'User ' + user.id.substring(0, 6)}</span>
+                <span>${isCurrentUser ? 'You' : 'User ' + hashId(user.id).substring(0, 6)}</span>
             </div>
         `;
         activeUsersList.appendChild(li);
     });
-    
-    // If no users
+
     if (Object.keys(activeUsers).length === 0) {
         activeUsersList.innerHTML = '<li>No active users</li>';
     }
 }
 
-// Fetch address from coordinates using Nominatim (OpenStreetMap)
+/**
+ * Fetches address from coordinates using Nominatim API.
+ * @param {number} lat - Latitude coordinate.
+ * @param {number} lng - Longitude coordinate.
+ * @returns {Promise<void>}
+ */
 async function fetchAddress(lat, lng) {
     if (!currentAddressElement) return;
-    
     try {
         const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
         const data = await response.json();
-        
-        if (data && data.display_name) {
-            currentAddressElement.textContent = `Address: ${data.display_name}`;
-        } else {
-            currentAddressElement.textContent = 'Address: Not available';
-        }
+        currentAddressElement.textContent = data.display_name
+            ? `Address: ${data.display_name}`
+            : 'Address: Not available';
     } catch (error) {
         console.error('Error fetching address:', error);
         currentAddressElement.textContent = 'Address: Error fetching';
     }
 }
 
-// Clean up inactive users every 30 seconds
+/**
+ * Cleans up inactive users every 30 seconds.
+ */
 setInterval(() => {
-    if (!map) return;
-    
     const now = new Date();
     Object.keys(activeUsers).forEach(id => {
-        const user = activeUsers[id];
-        const timeDiff = now - user.lastUpdate;
-        
-        // If user hasn't updated in 30 seconds, remove them
-        if (timeDiff > 30000) {
-            if (user.marker) {
-                map.removeLayer(user.marker);
-            }
+        if (now - activeUsers[id].lastUpdate > 30000 && id !== mySocketId) {
+            if (activeUsers[id].marker) map.removeLayer(activeUsers[id].marker);
             delete activeUsers[id];
             updateActiveUsersList();
         }
     });
 }, 30000);
 
-// POI markers array to keep track of all points of interest
-let poiMarkers = [];
-let trafficLayerActive = false;
-let trafficLayer = null;
-let distanceMeasurementActive = false;
-let measurePoints = [];
-let measureMarkers = [];
-let measureLines = [];
+/**
+ * Fetches autocomplete suggestions from Nominatim API.
+ * @param {string} query - Search query.
+ * @param {number} lat - User's latitude.
+ * @param {number} lng - User's longitude.
+ * @returns {Promise<void>}
+ */
+async function fetchAutocompleteSuggestions(query, lat, lng) {
+    if (!autocompleteResults) return;
+    const cacheKey = `${query}:${lat}:${lng}`;
+    if (autocompleteCache.has(cacheKey)) {
+        displayAutocompleteSuggestions(autocompleteCache.get(cacheKey), query);
+        return;
+    }
+    try {
+        const viewboxSize = 0.1;
+        const viewbox = `${lng - viewboxSize},${lat - viewboxSize},${lng + viewboxSize},${lat + viewboxSize}`;
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&viewbox=${viewbox}&bounded=1&addressdetails=1`);
+        const data = await response.json();
+        autocompleteCache.set(cacheKey, data);
+        displayAutocompleteSuggestions(data, query);
+    } catch (error) {
+        console.error('Error fetching autocomplete suggestions:', error);
+        showToast('Error loading suggestions.');
+    }
+}
 
-// Search for places
+/**
+ * Displays autocomplete suggestions in dropdown.
+ * @param {Array} results - API response data.
+ * @param {string} query - Search query.
+ */
+function displayAutocompleteSuggestions(results, query) {
+    autocompleteResults.innerHTML = '';
+    if (results.length === 0) {
+        autocompleteResults.classList.remove('active');
+        return;
+    }
+
+    results.forEach(result => {
+        const resultItem = document.createElement('div');
+        resultItem.className = 'autocomplete-item';
+        const displayName = highlightMatch(result.display_name, query);
+        resultItem.innerHTML = `
+            <div class="item-name">${displayName}</div>
+            <div class="item-address">${result.type || 'Place'}</div>
+        `;
+        resultItem.addEventListener('click', () => {
+            searchInput.value = result.display_name;
+            autocompleteResults.classList.remove('active');
+            const { lat, lng } = getCurrentLocation();
+            searchPlaces(result.display_name, lat, lng);
+        });
+        autocompleteResults.appendChild(resultItem);
+    });
+
+    autocompleteResults.classList.add('active');
+}
+
+/**
+ * Highlights matching text in autocomplete results.
+ * @param {string} text - Text to highlight.
+ * @param {string} query - Search query.
+ * @returns {string} Highlighted text.
+ */
+function highlightMatch(text, query) {
+    if (!query) return text;
+    const regex = new RegExp(`(${query})`, 'gi');
+    return text.replace(regex, '<span class="highlight">$1</span>');
+}
+
+/**
+ * Extracts keywords from search query for refined search.
+ * @param {string} query - Search query.
+ * @returns {string} Formatted search query.
+ */
+function extractKeywords(query) {
+    const lowerQuery = query.toLowerCase();
+    const amenityKeywords = [
+        { term: 'restaurant', osmTag: 'amenity=restaurant' },
+        { term: 'cafe', osmTag: 'amenity=cafe' },
+        { term: 'coffee', osmTag: 'amenity=cafe' },
+        { term: 'bar', osmTag: 'amenity=bar' },
+        { term: 'pub', osmTag: 'amenity=pub' },
+        { term: 'hotel', osmTag: 'tourism=hotel' },
+        { term: 'supermarket', osmTag: 'shop=supermarket' },
+        { term: 'market', osmTag: 'amenity=market' },
+        { term: 'hospital', osmTag: 'amenity=hospital' },
+        { term: 'park', osmTag: 'leisure=park' },
+        { term: 'fuel', osmTag: 'amenity=fuel' } // Added for gas stations
+    ];
+
+    const amenities = amenityKeywords
+        .filter(({ term }) => lowerQuery.includes(term))
+        .map(({ osmTag }) => osmTag);
+    return amenities.length ? amenities.join(' ') + ' ' + lowerQuery : query;
+}
+
+/**
+ * Searches for places using Nominatim API.
+ * @param {string} query - Search query.
+ * @param {number} lat - User's latitude.
+ * @param {number} lng - User's longitude.
+ * @returns {Promise<void>}
+ */
 async function searchPlaces(query, lat, lng) {
     if (!resultsContainer || !searchResultsPanel || !map) return;
-    
+    resultsContainer.innerHTML = '<div class="loading">Searching...</div>';
+    searchResultsPanel.classList.add('active');
+
     try {
-        // Clear previous results
-        clearSearchResults();
-        
-        // Show loading state
-        resultsContainer.innerHTML = '<div class="loading">Searching...</div>';
-        searchResultsPanel.classList.add('active');
-        
-        // For POI searches like "restaurants near me", use Overpass API
-        if (query.includes("near me")) {
-            const amenity = query.replace(" near me", "").trim();
-            const radius = 5000; // 5km radius (in meters)
-            
-            // Overpass query to find POIs of specified type near the user
-            const overpassQuery = `
-                [out:json];
-                node["amenity"="${amenity}"](around:${radius},${lat},${lng});
-                out body;
-            `;
-            
-            const response = await fetch(`https://overpass-api.de/api/interpreter`, {
-                method: 'POST',
-                body: overpassQuery
-            });
-            
-            const data = await response.json();
-            
-            if (data.elements && data.elements.length > 0) {
-                displayNearbyResults(data.elements, amenity);
-            } else {
-                // Fallback to Nominatim if no results from Overpass
-                const nominatimResponse = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=10&lat=${lat}&lon=${lng}&addressdetails=1`);
-                const nominatimData = await nominatimResponse.json();
-                displaySearchResults(nominatimData, query);
-            }
-        } else {
-            // Use Nominatim for regular searches
-            const viewboxSize = 0.1; // Size of the viewbox in degrees
-            const viewbox = `${lng-viewboxSize},${lat-viewboxSize},${lng+viewboxSize},${lat+viewboxSize}`;
-            
-            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=10&viewbox=${viewbox}&bounded=1&addressdetails=1`);
-            const data = await response.json();
-            
-            // Display results
-            displaySearchResults(data, query);
-        }
+        const searchQuery = extractKeywords(query);
+        const viewboxSize = 0.5;
+        const viewbox = `${lng - viewboxSize},${lat - viewboxSize},${lng + viewboxSize},${lat + viewboxSize}`;
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=10&viewbox=${viewbox}&bounded=1&addressdetails=1`);
+        const data = await response.json();
+        displaySearchResults(data, query);
     } catch (error) {
         console.error('Error searching places:', error);
         resultsContainer.innerHTML = '<div class="no-results">Error searching. Please try again.</div>';
+        showToast('Error searching places.');
     }
 }
 
-// Search for nearby places
+/**
+ * Searches for nearby places by category using Overpass API.
+ * @param {string} category - Category to search (e.g., restaurant).
+ * @param {number} lat - User's latitude.
+ * @param {number} lng - User's longitude.
+ * @returns {Promise<void>}
+ */
 async function searchNearby(category, lat, lng) {
     if (!resultsContainer || !searchResultsPanel || !map) return;
-    
+    resultsContainer.innerHTML = `<div class="loading">Searching nearby ${category}...</div>`;
+    searchResultsPanel.classList.add('active');
+
     try {
-        // Clear previous results
-        clearSearchResults();
-        
-        // Show loading state
-        resultsContainer.innerHTML = '<div class="loading">Searching nearby...</div>';
-        searchResultsPanel.classList.add('active');
-        
-        // Use Overpass API to find nearby POIs
-        const radius = 5000; // 5km radius (in meters)
-        const query = `
+        const radius = 2000;
+        const categoryTags = {
+            restaurant: 'amenity=restaurant',
+            cafe: 'amenity=cafe',
+            bar: 'amenity=bar',
+            pub: 'amenity=pub',
+            hotel: 'tourism=hotel',
+            supermarket: 'shop=supermarket',
+            market: 'amenity=market',
+            hospital: 'amenity=hospital',
+            park: 'leisure=park',
+            fuel: 'amenity=fuel'
+        };
+
+        const tag = categoryTags[category] || `amenity=${category}`;
+        const [key, value] = tag.split('=');
+        const overpassQuery = `
             [out:json];
-            node["amenity"="${category}"](around:${radius},${lat},${lng});
+            (
+                node["${key}"="${value}"](around:${radius},${lat},${lng});
+                way["${key}"="${value}"](around:${radius},${lat},${lng});
+                relation["${key}"="${value}"](around:${radius},${lat},${lng});
+            );
             out body;
+            >;
+            out skel qt;
         `;
-        
+
         const response = await fetch('https://overpass-api.de/api/interpreter', {
             method: 'POST',
-            body: query
+            body: overpassQuery
         });
-        
         const data = await response.json();
-        
-        // Display results
         displayNearbyResults(data.elements, category);
     } catch (error) {
-        console.error('Error searching nearby places:', error);
+        console.error('Error searching nearby:', error);
         resultsContainer.innerHTML = '<div class="no-results">Error searching nearby. Please try again.</div>';
+        showToast('Error searching nearby.');
     }
 }
 
-// Display Overpass API results
-function displayOverpassResults(elements, amenityType) {
-    if (!resultsContainer) return;
-    
-    if (elements.length === 0) {
-        resultsContainer.innerHTML = `<div class="no-results">No ${amenityType} found nearby.</div>`;
-        return;
-    }
-    
-    let resultsHTML = '';
-    
-    elements.forEach(place => {
-        const name = place.tags.name || `${amenityType.charAt(0).toUpperCase() + amenityType.slice(1)}`;
-        resultsHTML += `
-            <div class="result-item" data-lat="${place.lat}" data-lng="${place.lon}">
-                <h4>${name}</h4>
-                <p>${place.tags.address || ''}</p>
-                <div class="result-actions">
-                    <button class="btn-view" onclick="viewOnMap(${place.lat}, ${place.lon}, '${name.replace(/'/g, "\\'")}')">View</button>
-                    <button class="btn-directions" onclick="getDirections(${place.lat}, ${place.lon})">Directions</button>
-                    <button class="btn-route" onclick="getRoute(${place.lat}, ${place.lon})">Show Route</button>
-                </div>
-            </div>
-        `;
-        
-        // Add marker for this place
-        addPoiMarker(place.lat, place.lon, name);
-    });
-    
-    resultsContainer.innerHTML = resultsHTML;
-    
-    // Add click event to result items
-    const resultItems = document.querySelectorAll('.result-item');
-    resultItems.forEach(item => {
-        item.addEventListener('click', () => {
-            const lat = parseFloat(item.dataset.lat);
-            const lng = parseFloat(item.dataset.lng);
-            const name = item.querySelector('h4').textContent;
-            
-            viewOnMap(lat, lng, name);
-        });
-    });
-}
-
-// View a location on the map
-function viewOnMap(lat, lng, name) {
-    if (!map) return;
-    
-    map.setView([lat, lng], 16);
-    
-    // Find existing marker or create a new one
-    let marker = null;
-    for (const m of poiMarkers) {
-        if (m._latlng && m._latlng.lat === lat && m._latlng.lng === lng) {
-            marker = m;
-            break;
-        }
-    }
-    
-    if (!marker) {
-        addPoiMarker(lat, lng, name);
-    } else {
-        marker.openPopup();
-    }
-}
-
-// Display search results
+/**
+ * Displays search results in the results panel.
+ * @param {Array} results - API response data.
+ * @param {string} query - Search query.
+ */
 function displaySearchResults(results, query) {
     if (!resultsContainer || !searchResultsPanel || !map) return;
-    
+    resultsContainer.innerHTML = '';
+
     if (results.length === 0) {
-        resultsContainer.innerHTML = '<div class="no-results">No results found for "' + query + '"</div>';
+        resultsContainer.innerHTML = '<div class="no-results">No results found</div>';
         return;
     }
-    
-    // Clear previous results
-    resultsContainer.innerHTML = '';
-    
-    // Add results to panel
+
+    clearPoiMarkers();
     results.forEach(result => {
         const resultItem = document.createElement('div');
         resultItem.className = 'result-item';
+        const name = result.display_name || 'Unknown';
+        const distance = myMarker ? calculateDistance(
+            myMarker.getLatLng().lat,
+            myMarker.getLatLng().lng,
+            parseFloat(result.lat),
+            parseFloat(result.lon)
+        ) : 0;
+        const distanceText = distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`;
+
         resultItem.innerHTML = `
-            <h4>${result.display_name}</h4>
-            <p>Type: ${result.type || 'Place'}</p>
+            <h4>${highlightMatch(name, query)}</h4>
+            <p>Distance: ${distanceText}</p>
             <div class="result-actions">
-                <button class="btn-view" onclick="viewOnMap(${result.lat}, ${result.lon}, '${result.display_name.replace(/'/g, "\\'")}')">View</button>
-                <button class="btn-route" onclick="getRoute(${result.lat}, ${result.lon})">Show Route</button>
+                <button class="btn-view" onclick="viewOnMap(${result.lat}, ${result.lon}, '${name.replace(/'/g, "\\'")}')">View</button>
+                <button class="btn-route" onclick="getRoute(${result.lat}, ${result.lon}, '${name.replace(/'/g, "\\'")}')">Show Route</button>
             </div>
         `;
-        
-        // Add click event to center map on result
-        resultItem.addEventListener('click', () => {
-            const lat = parseFloat(result.lat);
-            const lng = parseFloat(result.lon);
-            
-            // Center map on result
-            map.setView([lat, lng], 16);
-            
-            // Add marker for result
-            addPoiMarker(lat, lng, result.display_name);
-            
-            // Close results panel on mobile
-            if (window.innerWidth <= 768) {
-                searchResultsPanel.classList.remove('active');
-            }
-        });
-        
+        resultItem.addEventListener('click', () => viewOnMap(result.lat, result.lon, name));
         resultsContainer.appendChild(resultItem);
+        addPoiMarker(result.lat, result.lon, name);
     });
 }
 
-// Display nearby search results
+/**
+ * Displays nearby search results in the results panel.
+ * @param {Array} results - Overpass API response data.
+ * @param {string} category - Category searched.
+ */
 function displayNearbyResults(results, category) {
     if (!resultsContainer || !searchResultsPanel || !map || !myMarker) return;
-    
-    if (results.length === 0) {
-        resultsContainer.innerHTML = '<div class="no-results">No ' + category + ' found nearby</div>';
+    const validResults = results.filter(item => item.lat && item.lon);
+    resultsContainer.innerHTML = '';
+
+    if (validResults.length === 0) {
+        resultsContainer.innerHTML = `<div class="no-results">No ${category} found nearby</div>`;
         return;
     }
-    
-    // Clear previous results
-    resultsContainer.innerHTML = '';
-    
-    // Sort results by distance
-    results.sort((a, b) => {
+
+    validResults.sort((a, b) => {
         const distA = calculateDistance(myMarker.getLatLng().lat, myMarker.getLatLng().lng, a.lat, a.lon);
         const distB = calculateDistance(myMarker.getLatLng().lat, myMarker.getLatLng().lng, b.lat, b.lon);
         return distA - distB;
     });
-    
-    // Add results to panel
-    results.forEach(result => {
+
+    clearPoiMarkers();
+    validResults.forEach(result => {
         const resultItem = document.createElement('div');
         resultItem.className = 'result-item';
-        
-        // Get name from tags or use category as fallback
-        const name = result.tags && result.tags.name ? result.tags.name : category;
-        
+        const name = result.tags?.name || category.charAt(0).toUpperCase() + category.slice(1);
+        const distance = calculateDistance(myMarker.getLatLng().lat, myMarker.getLatLng().lng, result.lat, result.lon);
+        const distanceText = distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`;
+
         resultItem.innerHTML = `
             <h4>${name}</h4>
-            <p>Distance: ${calculateDistance(myMarker.getLatLng().lat, myMarker.getLatLng().lng, result.lat, result.lon).toFixed(1)} km</p>
+            <p>Distance: ${distanceText}</p>
             <div class="result-actions">
                 <button class="btn-view" onclick="viewOnMap(${result.lat}, ${result.lon}, '${name.replace(/'/g, "\\'")}')">View</button>
-                <button class="btn-route" onclick="getRoute(${result.lat}, ${result.lon})">Show Route</button>
+                <button class="btn-route" onclick="getRoute(${result.lat}, ${result.lon}, '${name.replace(/'/g, "\\'")}')">Show Route</button>
             </div>
         `;
-        
-        // Add click event to center map on result
-        resultItem.addEventListener('click', () => {
-            const lat = parseFloat(result.lat);
-            const lng = parseFloat(result.lon);
-            
-            // Center map on result
-            map.setView([lat, lng], 16);
-            
-            // Add marker for result
-            addPoiMarker(lat, lng, name);
-            
-            // Close results panel on mobile
-            if (window.innerWidth <= 768) {
-                searchResultsPanel.classList.remove('active');
-            }
-        });
-        
+        resultItem.addEventListener('click', () => viewOnMap(result.lat, result.lon, name));
         resultsContainer.appendChild(resultItem);
+        addPoiMarker(result.lat, result.lon, name);
     });
 }
 
-// Add POI marker to map
-function addPoiMarker(lat, lng, name) {
-    if (!map) return;
-    
-    // Create custom icon for POI
-    const poiIcon = L.divIcon({
-        className: 'poi-marker',
-        html: `<i class="fas fa-map-pin"></i>`,
-        iconSize: [45, 45], // Increased from 36x36 to 45x45
-        iconAnchor: [22, 45],
-        popupAnchor: [0, -45]
-    });
-    
-    // Create marker
-    const marker = L.marker([lat, lng], {
-        icon: poiIcon
-    }).addTo(map);
-    
-    // Add popup with improved UI
-    marker.bindPopup(`
-        <div class="poi-popup">
-            <h3>${name}</h3>
-            <p>Lat: ${lat.toFixed(6)}</p>
-            <p>Lng: ${lng.toFixed(6)}</p>
-            <div class="popup-buttons">
-                <button class="btn-directions" onclick="getDirections(${lat}, ${lng})">Get Directions</button>
-                <button class="btn-route" onclick="getRoute(${lat}, ${lng})">Show Route</button>
-                <button class="btn-cancel" onclick="cancelRoute()">Cancel Route</button>
+/**
+ * Calculates distance between two points using Haversine formula.
+ * @param {number} lat1 - First latitude.
+ * @param {number} lon1 - First longitude.
+ * @param {number} lat2 - Second latitude.
+ * @param {number} lon2 - Second longitude.
+ * @returns {number} Distance in kilometers.
+ */
+function calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = deg2rad(lat2 - lat1);
+    const dLon = deg2rad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
+/**
+ * Converts degrees to radians.
+ * @param {number} deg - Degrees.
+ * @returns {number} Radians.
+ */
+function deg2rad(deg) {
+    return deg * (Math.PI / 180);
+}
+
+/**
+ * Gets route between current location and destination using OSRM, displaying info in a popup.
+ * @param {number} destLat - Destination latitude.
+ * @param {number} destLng - Destination longitude.
+ * @param {string} name - Name of the destination.
+ * @returns {Promise<void>}
+ */
+async function getRoute(destLat, destLng, name) {
+    if (!map || !myMarker) return;
+    showToast('Calculating route...');
+
+    try {
+        const startLat = myMarker.getLatLng().lat;
+        const startLng = myMarker.getLatLng().lng;
+        const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${destLng},${destLat}?overview=full&geometries=geojson`);
+        const data = await response.json();
+
+        if (data.routes && data.routes.length > 0) {
+            clearRoute();
+
+            routeLayer = L.geoJSON(data.routes[0].geometry, {
+                style: { color: '#276EF1', weight: 6, opacity: 0.7 }
+            }).addTo(map);
+            map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+
+            destinationMarker = L.marker([destLat, destLng], {
+                icon: createCustomIcon(false)
+            }).addTo(map);
+
+            const distance = (data.routes[0].distance / 1000).toFixed(1);
+            const duration = Math.round(data.routes[0].duration / 60);
+
+            destinationMarker.bindPopup(`
+                <div class="route-info-popup">
+                    <h4>${name}</h4>
+                    <p><i class="fas fa-road"></i> Distance: ${distance} km</p>
+                    <p><i class="fas fa-clock"></i> Duration: ${duration} min</p>
+                    <button class="close-route-btn" onclick="clearRoute()">Clear Route</button>
+                </div>
+            `, {
+                offset: L.point(0, -30)
+            }).openPopup();
+
+            if (travelTimesBtn) travelTimesBtn.style.display = 'block';
+        } else {
+            showToast('No route found. Please try a different destination.');
+        }
+    } catch (error) {
+        console.error('Error calculating route:', error);
+        showToast('Error calculating route. Please try again.');
+    } finally {
+        hideToast();
+    }
+}
+
+/**
+ * Shows travel times by car, bike, and walking to the destination.
+ * @param {number} destLat - Destination latitude.
+ * @param {number} destLng - Destination longitude.
+ * @returns {Promise<void>}
+ */
+async function showTravelTimes(destLat, destLng) {
+    if (!myMarker || !destinationMarker) return;
+    showToast('Calculating travel times...');
+
+    try {
+        const startLat = myMarker.getLatLng().lat;
+        const startLng = myMarker.getLatLng().lng;
+        const modes = [
+            { mode: 'driving', icon: 'car', label: 'Car' },
+            { mode: 'cycling', icon: 'bicycle', label: 'Bike' },
+            { mode: 'walking', icon: 'walking', label: 'Walk' }
+        ];
+
+        const times = await Promise.all(modes.map(async ({ mode, icon, label }) => {
+            const response = await fetch(`https://router.project-osrm.org/route/v1/${mode}/${startLng},${startLat};${destLng},${destLat}?overview=false`);
+            const data = await response.json();
+            if (data.routes && data.routes.length > 0) {
+                const duration = Math.round(data.routes[0].duration / 60);
+                return `<p><i class="fas fa-${icon}"></i> ${label}: ${duration} min</p>`;
+            }
+            return `<p><i class="fas fa-${icon}"></i> ${label}: Unavailable</p>`;
+        }));
+
+        destinationMarker.bindPopup(`
+            <div class="route-info-popup">
+                <h4>Travel Times</h4>
+                <div class="travel-times">${times.join('')}</div>
+                <button class="close-route-btn" onclick="clearRoute()">Clear Route</button>
             </div>
-        </div>
-    `).openPopup();
-    
-    // Add to POI markers array
+        `, {
+            offset: L.point(0, -30)
+        }).openPopup();
+    } catch (error) {
+        console.error('Error calculating travel times:', error);
+        showToast('Error calculating travel times.');
+    } finally {
+        hideToast();
+    }
+}
+
+/**
+ * Clears the current route, destination marker, and popup.
+ */
+function clearRoute() {
+    if (routeLayer) {
+        map.removeLayer(routeLayer);
+        routeLayer = null;
+    }
+    if (destinationMarker) {
+        map.removeLayer(destinationMarker);
+        destinationMarker = null;
+    }
+    if (travelTimesBtn) travelTimesBtn.style.display = 'none';
+}
+
+/**
+ * Shows a toast message.
+ * @param {string} message - Message to display.
+ */
+function showToast(message) {
+    hideToast();
+    const toast = document.createElement('div');
+    toast.className = 'loading-toast';
+    toast.id = 'loading-toast';
+    toast.innerHTML = `
+        <i class="fas fa-spinner fa-spin"></i>
+        <span>${message}</span>
+    `;
+    document.body.appendChild(toast);
+    setTimeout(hideToast, 3000);
+}
+
+/**
+ * Hides the toast message.
+ */
+function hideToast() {
+    const existingToast = document.getElementById('loading-toast');
+    if (existingToast) existingToast.remove();
+}
+
+/**
+ * Clears search results and POI markers.
+ */
+function clearSearchResults() {
+    if (resultsContainer) {
+        resultsContainer.innerHTML = '<p class="no-results">Search for places to see results</p>';
+    }
+    clearPoiMarkers();
+}
+
+/**
+ * Clears all POI markers from the map.
+ */
+function clearPoiMarkers() {
+    poiMarkers.forEach(marker => map.removeLayer(marker));
+    poiMarkers = [];
+}
+
+/**
+ * Adds a POI marker to the map.
+ * @param {number} lat - Latitude.
+ * @param {number} lng - Longitude.
+ * @param {string} name - Name of the place.
+ */
+function addPoiMarker(lat, lng, name) {
+    const marker = L.marker([lat, lng]).addTo(map);
+    marker.bindPopup(`<div class="poi-popup"><h3>${name}</h3></div>`);
     poiMarkers.push(marker);
 }
 
-// Clear search results and POI markers
-function clearSearchResults() {
-    if (!map) return;
-    
-    // Clear POI markers from map
-    poiMarkers.forEach(marker => {
-        map.removeLayer(marker);
-    });
-    
-    // Reset POI markers array
-    poiMarkers = [];
-    
-    // Clear route layer if exists
-    if (routeLayer) {
-        map.removeLayer(routeLayer);
-        routeLayer = null;
-    }
-    
-    // Remove route info control if exists
-    if (routeInfoControl) {
-        map.removeControl(routeInfoControl);
-        routeInfoControl = null;
-    }
-    
-    // Hide search results panel
-    if (searchResultsPanel) {
-        searchResultsPanel.classList.remove('active');
+/**
+ * Views a location on the map.
+ * @param {number} lat - Latitude.
+ * @param {number} lng - Longitude.
+ * @param {string} name - Name of the place.
+ */
+function viewOnMap(lat, lng, name) {
+    map.setView([lat, lng], DEFAULT_ZOOM);
+    addPoiMarker(lat, lng, name);
+}
+
+/**
+ * Handles map click for distance measurement.
+ * @param {Object} e - Leaflet click event.
+ */
+function handleMeasureClick(e) {
+    measurePoints.push(e.latlng);
+    const marker = L.marker(e.latlng).addTo(map);
+    measureMarkers.push(marker);
+
+    if (measurePoints.length > 1) {
+        const line = L.polyline(measurePoints.slice(-2), { color: '#FF0000' }).addTo(map);
+        measureLines.push(line);
+        const distance = calculateDistance(
+            measurePoints[measurePoints.length - 2].lat,
+            measurePoints[measurePoints.length - 2].lng,
+            measurePoints[measurePoints.length - 1].lat,
+            measurePoints[measurePoints.length - 1].lng
+        );
+        marker.bindPopup(`Distance: ${distance.toFixed(2)} km`).openPopup();
+        showToast(`Distance: ${distance.toFixed(2)} km`);
     }
 }
 
-// Helper function to calculate distance between two points
-function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Radius of the earth in km
-    const dLat = deg2rad(lat2 - lat1);
-    const dLon = deg2rad(lon2 - lon1);
-    const a = 
-        Math.sin(dLat/2) * Math.sin(dLat/2) +
-        Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
-        Math.sin(dLon/2) * Math.sin(dLon/2); 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-    const distance = R * c; // Distance in km
-    return distance;
+/**
+ * Clears distance measurement markers and lines.
+ */
+function clearMeasurement() {
+    measureMarkers.forEach(marker => map.removeLayer(marker));
+    measureLines.forEach(line => map.removeLayer(line));
+    measurePoints = [];
+    measureMarkers = [];
+    measureLines = [];
 }
 
-function deg2rad(deg) {
-    return deg * (Math.PI/180);
-}
-
-// Get directions to a location
-function getDirections(lat, lng) {
-    if (!myMarker) {
-        alert('Your location is not available yet.');
-        return;
-    }
-    
-    // Open in Google Maps
-    const myLat = myMarker.getLatLng().lat;
-    const myLng = myMarker.getLatLng().lng;
-    const url = `https://www.google.com/maps/dir/?api=1&origin=${myLat},${myLng}&destination=${lat},${lng}&travelmode=driving`;
-    window.open(url, '_blank');
-}
-
-// Get route to a location
-async function getRoute(lat, lng) {
-    if (!myMarker) {
-        alert('Your location is not available yet.');
-        return;
-    }
-    
-    try {
-        const myLat = myMarker.getLatLng().lat;
-        const myLng = myMarker.getLatLng().lng;
-        
-        // Cancel any existing route
-        cancelRoute();
-        
-        // Show loading indicator
-        const loadingToast = document.createElement('div');
-        loadingToast.className = 'loading-toast';
-        loadingToast.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Calculating route...';
-        document.body.appendChild(loadingToast);
-        
-        // Call OSRM API for routing
-        const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${myLng},${myLat};${lng},${lat}?overview=full&geometries=geojson`);
-        const data = await response.json();
-        
-        // Remove loading indicator
-        document.body.removeChild(loadingToast);
-        
-        if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-            throw new Error('No route found');
-        }
-        
-        // Get route geometry
-        const routeGeometry = data.routes[0].geometry;
-        const distance = (data.routes[0].distance / 1000).toFixed(2); // km
-        const duration = Math.round(data.routes[0].duration / 60); // minutes
-        
-        // Create route layer
-        routeLayer = L.geoJSON(routeGeometry, {
-            style: {
-                color: '#276EF1',
-                weight: 5,
-                opacity: 0.7
-            }
-        }).addTo(map);
-        
-        // Add route info control
-        routeInfoControl = L.control({position: 'bottomleft'});
-        routeInfoControl.onAdd = function() {
-            const div = L.DomUtil.create('div', 'route-info');
-            div.innerHTML = `
-                <div class="route-info-content">
-                    <h4>Route Information</h4>
-                    <p><i class="fas fa-road"></i> Distance: ${distance} km</p>
-                    <p><i class="fas fa-clock"></i> Duration: ${duration} min</p>
-                    <button class="close-route-btn" onclick="cancelRoute()">Cancel Route</button>
-                </div>
-            `;
-            return div;
-        };
-        routeInfoControl.addTo(map);
-        
-        // Fit map to show the route
-        map.fitBounds(routeLayer.getBounds(), {
-            padding: [50, 50]
-        });
-        
-    } catch (error) {
-        console.error('Error getting route:', error);
-        alert('Unable to calculate route. Please try again.');
-    }
-}
-
-// Cancel route
-function cancelRoute() {
-    if (!map) return;
-    
-    // Clear route layer if exists
-    if (routeLayer) {
-        map.removeLayer(routeLayer);
-        routeLayer = null;
-    }
-    
-    // Remove route info control if exists
-    if (routeInfoControl) {
-        map.removeControl(routeInfoControl);
-        routeInfoControl = null;
-    }
-    
-    // Return to original zoom level
+/**
+ * Gets the current location or falls back to map center.
+ * @returns {Object} Latitude and longitude.
+ */
+function getCurrentLocation() {
     if (myMarker) {
-        map.setView(myMarker.getLatLng(), 16);
+        return { lat: myMarker.getLatLng().lat, lng: myMarker.getLatLng().lng };
+    }
+    const center = map.getCenter();
+    return { lat: center.lat, lng: center.lng };
+}
+
+/**
+ * Obfuscates user ID for display.
+ * @param {string} id - User ID.
+ * @returns {string} Hashed ID.
+ */
+function hashId(id) {
+    return btoa(id).substring(0, 12);
+}
+
+/**
+ * Debounces a function to limit execution rate.
+ * @param {Function} func - Function to debounce.
+ * @param {number} wait - Wait time in milliseconds.
+ * @returns {Function} Debounced function.
+ */
+function debounce(func, wait) {
+    let timeout;
+    return function (...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}
+
+/**
+ * Initializes the application.
+ */
+function initializeApp() {
+    if (navigator.geolocation) {
+        navigator.geolocation.watchPosition(
+            (position) => {
+                const { latitude, longitude } = position.coords;
+                socket.emit('send-location', { latitude, longitude });
+                currentLatElement.textContent = `Latitude: ${latitude.toFixed(6)}`;
+                currentLngElement.textContent = `Longitude: ${longitude.toFixed(6)}`;
+                fetchAddress(latitude, longitude);
+
+                if (!myMarker) {
+                    myMarker = L.marker([latitude, longitude], {
+                        icon: createCustomIcon(true)
+                    }).addTo(map);
+                    myMarker.bindPopup(`
+                        <div class="user-popup">
+                            <h3>Your Location</h3>
+                            <p>Lat: ${latitude.toFixed(6)}</p>
+                            <p>Lng: ${longitude.toFixed(6)}</p>
+                        </div>
+                    `);
+                    activeUsers[mySocketId] = {
+                        id: mySocketId,
+                        marker: myMarker,
+                        lastUpdate: new Date()
+                    };
+                    map.setView([latitude, longitude], DEFAULT_ZOOM);
+                } else {
+                    myMarker.setLatLng([latitude, longitude]);
+                }
+                trackingText.textContent = 'Tracking Active';
+                trackingIcon.innerHTML = '<i class="fas fa-location-arrow"></i>';
+                trackingIcon.classList.add('pulse');
+            },
+            (error) => {
+                console.error('Error getting location:', error);
+                trackingText.textContent = 'Tracking Failed';
+                trackingIcon.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
+                showToast('Could not get your location. Please check GPS settings.');
+            },
+            {
+                enableHighAccuracy: true,
+                maximumAge: 0,
+                timeout: 5000
+            }
+        );
+    } else {
+        showToast('Geolocation is not supported by your browser.');
+        trackingText.textContent = 'Tracking Not Supported';
+        trackingIcon.innerHTML = '<i class="fas fa-ban"></i>';
     }
 }
 
-window.getRoute = getRoute;
-window.cancelRoute = cancelRoute;
-window.getDirections = getDirections;
-window.viewOnMap = viewOnMap;
-
-// Add event listener for close results button
-if (closeResultsBtn) {
-    closeResultsBtn.addEventListener('click', () => {
-        if (searchResultsPanel) {
-            searchResultsPanel.classList.remove('active');
-            clearSearchResults();
-        }
-    });
-}
-
-
+// Initialize app when DOM is loaded
+document.addEventListener('DOMContentLoaded', initializeApp);
