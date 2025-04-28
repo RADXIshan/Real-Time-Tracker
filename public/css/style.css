@@ -651,7 +651,7 @@ html, body {
 }
 
 .custom-marker.self {
-    color: var(--danger-color);
+    color: var(--primary-color);
 }
 
 .custom-marker i {
