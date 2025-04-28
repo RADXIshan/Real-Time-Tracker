@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Tracking App</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <i class="fas fa-location-arrow"></i>
+                <h1>TrackMe</h1>
+            </div>
+            <div class="search-container">
+                <div class="search-box">
+                    <input type="text" id="search-input" placeholder="Search places, restaurants, etc.">
+                    <button id="search-button"><i class="fas fa-search"></i></button>
+                </div>
+                <div class="quick-search">
+                    <button class="quick-search-btn" data-query="restaurants near me" data-category="restaurant">Restaurants</button>
+                    <button class="quick-search-btn" data-query="cafes near me" data-category="cafe">Cafes</button>
+                    <button class="quick-search-btn" data-query="gas stations near me" data-category="fuel">Gas</button>
+                    <button class="quick-search-btn" data-query="hotels near me" data-category="hotel">Hotels</button>
+                </div>
+            </div>
+            <div class="user-controls">
+                <button id="toggle-sidebar" class="btn"><i class="fas fa-bars"></i></button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="sidebar-header">
+                    <h2>Tracking Details</h2>
+                    <button id="close-sidebar" class="btn"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="tracking-info">
+                    <div class="info-card">
+                        <div class="card-header">
+                            <i class="fas fa-user"></i>
+                            <h3>Current User</h3>
+                        </div>
+                        <div class="card-content">
+                            <p id="user-id">ID: Connecting...</p>
+                            <p id="user-status">Status: Online</p>
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="card-header">
+                            <i class="fas fa-map-marker-alt"></i>
+                            <h3>Location</h3>
+                        </div>
+                        <div class="card-content">
+                            <p id="current-lat">Latitude: --</p>
+                            <p id="current-lng">Longitude: --</p>
+                            <p id="current-address">Address: Loading...</p>
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="card-header">
+                            <i class="fas fa-users"></i>
+                            <h3>Active Users</h3>
+                        </div>
+                        <div class="card-content">
+                            <ul id="active-users-list">
+                                <li>Loading users...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Map Container -->
+            <div class="map-container">
+                <div id="map"></div>
+                
+                <!-- Search Results Panel -->
+                <div class="search-results-panel" id="search-results-panel">
+                    <div class="panel-header">
+                        <h3>Search Results</h3>
+                        <button id="close-results" class="btn"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="results-container" id="results-container">
+                        <p class="no-results">Search for places to see results</p>
+                    </div>
+                </div>
+                
+                <!-- Map Controls -->
+                <div class="map-controls">
+                    <button id="center-map" class="control-btn" title="Center on me"><i class="fas fa-crosshairs"></i></button>
+                    <button id="toggle-traffic" class="control-btn" title="Toggle traffic view"><i class="fas fa-car"></i></button>
+                    <button id="toggle-satellite" class="control-btn" title="Toggle satellite view"><i class="fas fa-globe"></i></button>
+                    <button id="measure-distance" class="control-btn" title="Measure distance"><i class="fas fa-ruler"></i></button>
+                    <button id="share-location" class="control-btn" title="Share my location"><i class="fas fa-share-alt"></i></button>
+                </div>
+                
+                <!-- Status Bar -->
+                <div class="status-bar">
+                    <div class="connection-status">
+                        <span id="connection-icon"><i class="fas fa-wifi"></i></span>
+                        <span id="connection-text">Connected</span>
+                    </div>
+                    <div class="tracking-status">
+                        <span id="tracking-icon"><i class="fas fa-location-arrow"></i></span>
+                        <span id="tracking-text">Tracking Active</span>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js" integrity="sha384-mkQ3/7FUtcGyoppY6bz/PORYoGqOl7/aSUMn2ymDOJcapfS6PHqxhRTMh1RR0Q6+" crossorigin="anonymous"></script>
+    <script src="/js/script.js"></script>
+</body>
+</html>
