@@ -701,7 +701,32 @@ html, body {
     border-radius: 4px;
     font-size: 14px;
 }
+.travel_btn {
+    background-color: var(--accent-color);
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin-top: 10px;
+    cursor: pointer;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    transition: var(--transition);
+    width: 150px;
+}
 
+.travel_btn:hover {
+    background-color: #00a6b8;
+    transform: translateY(-2px);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.travel_btn i {
+    font-size: 16px;
+}
 .close-route-btn {
     background-color: var(--danger-color);
     color: white;
